@@ -15,6 +15,10 @@ Sin API key y sin pagar por token: usa tu login de Claude Code (Pro o Max).
 ## Qué hace
 
 - **Escucha las dos partes de la llamada.** El audio de los demás sale de tus parlantes (WASAPI loopback) y el tuyo del micrófono. Lo transcribe [faster-whisper](https://github.com/SYSTRAN/faster-whisper) en tu PC, en español por defecto.
+- **Distingue tu voz de la de los demás.** Antes de la primera escucha lees un
+  texto corto en voz alta (15 s) y queda una huella de tu voz. Así sabe cuándo
+  hablas tú y cuándo ellos, también en una reunión presencial donde todos se
+  oyen por el mismo micrófono.
 - **Detecta cuándo te preguntan algo** (`¿…?`, “¿qué opinas?”, “cuéntanos…”, tu nombre) y te sugiere una respuesta corta, lista para decirla en voz alta.
 - **Responde rápido.** La respuesta empieza a aparecer ~2 s después de que terminan de preguntar, y se va escribiendo en vivo.
 - **Lee tu pantalla** con un atajo: un diagrama, una planilla, un correo, un problema de código.
@@ -28,6 +32,12 @@ Sin API key y sin pagar por token: usa tu login de Claude Code (Pro o Max).
 | Inicio | Respuestas | Transcripción |
 | --- | --- | --- |
 | El botón coral activa la escucha. | Las sugerencias (**DI ESTO**) van más grandes para leerlas de un vistazo. | Cada línea dice quién habló: **Ellos** o **Tú**. |
+
+Antes de escuchar por primera vez, calibras tu voz:
+
+<p align="center">
+  <img src="assets/screenshots/panel-calibrate.png" alt="Tarjeta Calibra tu voz: un texto para leer en voz alta, barra de tiempo y barra de volumen del micrófono" width="420" />
+</p>
 
 Así lo ve la otra persona cuando compartes pantalla:
 
@@ -110,9 +120,29 @@ crear el entorno en otro disco y apuntar el acceso directo a él con
 1. Abre **Copiloto** desde el acceso directo (o `.\.venv\Scripts\python.exe src\main.py`).
 2. Escribe en **Notas** el contexto de la reunión: quién es el cliente, qué le ofreces, precios.
 3. En **Audio de la llamada**, elige la misma salida que usa Zoom, Meet o Teams como altavoz.
-4. Pulsa **● Escuchar**. Cuando te pregunten algo, aparece una tarjeta **DI ESTO**.
+4. Pulsa **● Escuchar**. La primera vez te pide **calibrar tu voz** (ver abajo).
+5. Cuando te pregunten algo, aparece una tarjeta **DI ESTO**.
 
-La primera vez descarga el modelo de Whisper (`small`, ~480 MB).
+La primera vez descarga el modelo de Whisper (`small`, ~480 MB) y el de voz (26 MB).
+
+### Calibrar tu voz
+
+El micrófono no oye solo tu voz: en una reunión presencial oye a todos, y si
+usas parlantes también oye la llamada. Para separar, Copiloto guarda una huella
+de tu voz y compara cada frase del micrófono con ella:
+
+- Pulsa **Empezar** y lee el texto de la tarjeta con tu tono normal, durante 15 s.
+  Las barras muestran el tiempo y el volumen de tu micrófono.
+- Si te oyó poco o hubo ruido u otra voz, te lo dice y puedes **Reintentar**.
+- Desde ahí, lo que diga otra persona en tu micrófono aparece como **Ellos** y
+  puede disparar una sugerencia; lo tuyo aparece como **Tú**.
+- **Omitir** escucha sin separar voces (todo el micrófono cuenta como tú) hasta
+  que cierres la app. Con el chip **Mi voz ✓** vuelves a calibrar cuando quieras,
+  por ejemplo con otro micrófono.
+
+La huella se calcula en tu PC con un modelo
+[WeSpeaker](https://github.com/wenet-e2e/wespeaker) vía
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), y se guarda en `profile/`.
 
 | Atajo | Acción |
 | --- | --- |
@@ -137,6 +167,8 @@ conservan el prefijo `CLUELY_` del proyecto original.
 | `CLUELY_WHISPER_MODEL` | `small` | `small` es rápido; `medium` o `large-v3-turbo` son más precisos y más lentos. |
 | `CLUELY_WHISPER_DEVICE` | `cuda` | `cuda` (GPU) o `cpu`. Si falla la GPU, cae a CPU solo. |
 | `CLUELY_WHISPER_DIR` | caché de Hugging Face | Carpeta donde se descargan los modelos. |
+| `CLUELY_VOICE_ID` | `1` | Calibrar tu voz y separar Tú / Ellos en el micrófono. `0` lo apaga. |
+| `CLUELY_VOICE_THRESHOLD` | `0.5` | Parecido mínimo con tu huella para contar como Tú. Si a veces sales como Ellos, bájalo a `0.4`. |
 | `CLUELY_PAUSE_SECONDS` | `0.5` | Silencio que marca el fin de una frase. Menos = respuesta antes, pero puede partir frases. |
 | `CLUELY_CHUNK_SECONDS` | `6.0` | Largo máximo de una frase si la persona no hace pausas. |
 | `CLUELY_AUTO_MODEL` | `haiku` | Modelo para las sugerencias en vivo. |
@@ -161,6 +193,12 @@ Si la llamada mezcla idiomas, prueba `auto`.
 **“no response (… needs `claude` re-login)”.** Abre una terminal, ejecuta
 `claude` y vuelve a iniciar sesión.
 
+**Mis frases salen como “Ellos”** (o las de otra persona como “Tú”). Vuelve a
+calibrar con **Mi voz ✓**, con el micrófono que vas a usar y en un lugar
+tranquilo. Si sigue pasando, ajusta `CLUELY_VOICE_THRESHOLD`: más bajo si tú
+sales como Ellos, más alto si otros salen como Tú. Las frases de menos de
+1 s no se comparan y quedan como Tú.
+
 **Va lento al transcribir.** Si el estado dice “uso CPU”, la GPU no cargó.
 Instala los drivers de NVIDIA al día. Para que la respuesta salga antes, baja `CLUELY_PAUSE_SECONDS` a `0.4`.
 
@@ -170,6 +208,9 @@ Instala los drivers de NVIDIA al día. Para que la respuesta salga antes, baja `
   pantalla cuando tú la pides), por la misma sesión de Claude Code que ya usas.
 - Las notas y transcripciones quedan en `notes/`, que está en `.gitignore`.
   Contienen palabras de otras personas: no las subas a ningún lado.
+- La huella de tu voz es un dato biométrico. Se guarda solo en `profile/`
+  (también en `.gitignore`), nunca sale de tu PC, y la borras eliminando esa
+  carpeta. No se guarda la grabación de la calibración.
 - Pensado para **tus** reuniones: llamadas con clientes, entrevistas que tú
   conduces, presentaciones y demos. No es para pruebas o evaluaciones donde se
   mide tu capacidad sin ayuda; el prompt se niega a producir contenido para
@@ -185,6 +226,11 @@ Basado en [Ronils-Cluely-OPENSOURCE](https://github.com/ron2k1/Ronils-Cluely-OPE
 de [@ron2k1](https://github.com/ron2k1) (Apache-2.0). Los cambios están en
 [CHANGELOG.md](CHANGELOG.md) y en [NOTICE](NOTICE). “Cluely” es una marca de su
 respectivo dueño; este proyecto no está afiliado a Cluely ni a Anthropic.
+
+La transcripción usa [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+y la huella de voz, un modelo de [WeSpeaker](https://github.com/wenet-e2e/wespeaker)
+ejecutado con [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). Ambos modelos
+se descargan de sus fuentes oficiales al usarlos; no vienen en este repositorio.
 
 ## Licencia
 

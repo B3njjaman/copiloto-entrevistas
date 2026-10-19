@@ -5,6 +5,18 @@ Versioning is informal (personal tool). Versions up to 0.3.0 are the upstream
 project, ron2k1/Ronils-Cluely-OPENSOURCE.
 
 ## [Unreleased]
+### Added
+- **Voice calibration.** Before the first listen the panel asks you to read a
+  short text for 15 s and builds a voiceprint (WeSpeaker ResNet34 via
+  sherpa-onnx, on the CPU, stored only in the gitignored `profile/`). Each mic
+  phrase is compared with it: someone else heard on your mic (an in-person
+  meeting, or your speakers) is labelled "Ellos" and can trigger an answer.
+  "Omitir" listens without it; the "Mi voz ✓" chip recalibrates.
+  New `CLUELY_VOICE_ID` and `CLUELY_VOICE_THRESHOLD`.
+- `tests/test_voice.py` checks the voiceprint with Windows text-to-speech voices.
+### Changed
+- The "no call audio" warning is skipped when other voices are heard on the mic,
+  since a silent call is expected in an in-person meeting.
 
 ## [1.0.0] - 2026-10-19
 Fork renamed to **Copiloto**, adapted for Spanish-speaking meetings.
