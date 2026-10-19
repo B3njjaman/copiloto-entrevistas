@@ -14,6 +14,13 @@ project, ron2k1/Ronils-Cluely-OPENSOURCE.
   "Omitir" listens without it; the "Mi voz ✓" chip recalibrates.
   New `CLUELY_VOICE_ID` and `CLUELY_VOICE_THRESHOLD`.
 - `tests/test_voice.py` checks the voiceprint with Windows text-to-speech voices.
+- **Personal skin.** `scripts/make_skin.py` cuts the character out of your
+  wallpaper; the panel then takes its colours and shows an animated mascot that
+  reacts to listening, thinking, answers and errors. Stored only in the
+  gitignored `skin/`; `CLUELY_SKIN=0` turns it off. First version by Codex.
+### Fixed
+- `scripts/screenshots.py` went live before loading the demo transcript, so it
+  fired real auto-answers (Claude sessions) and crashed on exit while they ran.
 ### Changed
 - The "no call audio" warning is skipped when other voices are heard on the mic,
   since a silent call is expected in an in-person meeting.

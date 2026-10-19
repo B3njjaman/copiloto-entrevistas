@@ -24,6 +24,7 @@ Sin API key y sin pagar por token: usa tu login de Claude Code (Pro o Max).
 - **Lee tu pantalla** con un atajo: un diagrama, una planilla, un correo, un problema de código.
 - **No aparece al compartir pantalla** ni en grabaciones (`WDA_EXCLUDEFROMCAPTURE`).
 - **Tus notas como contexto.** Lo que escribes en *Notas* (el cliente, tu propuesta, precios, objeciones) viaja con cada pregunta.
+- **Con tu personaje, si quieres.** Recorta el personaje de tu wallpaper y lo pone de mascota animada en el panel ([ver cómo](#personaliza-el-panel-con-tu-wallpaper)).
 
 ## Capturas
 
@@ -154,6 +155,34 @@ La huella se calcula en tu PC con un modelo
 | `Ctrl+Alt+T` | El mouse atraviesa el panel |
 | `Ctrl+Alt+Q` | Guardar notas y salir |
 
+### Personaliza el panel con tu wallpaper
+
+Si tu fondo de pantalla tiene un personaje sobre un fondo liso (por ejemplo, un
+wallpaper de anime), Copiloto puede recortarlo y convertirlo en tu mascota:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\make_skin.py            # usa tu wallpaper actual
+.\.venv\Scripts\python.exe scripts\make_skin.py otra.png   # o cualquier imagen
+```
+
+Al abrir Copiloto, el panel toma los colores del personaje y aparece una franja
+con la mascota y un globo de diálogo:
+
+| Momento | La mascota |
+| --- | --- |
+| Al abrir | Te saluda. |
+| Escuchando | Brilla y muestra barras de sonido. |
+| Claude pensando | Puntos suspensivos. |
+| Respuesta lista | Da un saltito con destellos: “¡Listo! Esto puedes decir”. |
+| Error o aviso | Se sacude y te dice qué pasa (“No oigo la llamada…”). |
+| Clic | Te da ánimo. |
+
+Todo queda en `skin/`, que está en `.gitignore`: el arte de un wallpaper
+suele ser de otra persona, así que no se publica. Por eso las capturas de este
+README usan el tema por defecto. Para volver al tema normal, borra `skin/` o
+usa `CLUELY_SKIN=0`. Como el resto del panel, la mascota no aparece al
+compartir pantalla.
+
 ## Configuración
 
 Copia `copiloto.env.example` a `copiloto.env` y descomenta lo que quieras
@@ -180,6 +209,7 @@ conservan el prefijo `CLUELY_` del proyecto original.
 | `CLUELY_ECHO_GUARD` | `1` | Descarta tu micrófono cuando repite lo que ya sonó por los parlantes. |
 | `CLUELY_VISION_MONITOR` | `1` | Monitor que lee *Leer pantalla* (`0` = todos). |
 | `CLUELY_OPACITY` | `0.93` | Opacidad del panel. |
+| `CLUELY_SKIN` | `1` | Usar la mascota y los colores de `skin/` si existen. `0` = tema normal. |
 
 ## Solución de problemas
 
