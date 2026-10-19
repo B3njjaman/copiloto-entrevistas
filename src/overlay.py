@@ -20,9 +20,10 @@ from PySide6.QtWidgets import (
 )
 
 import brain
+import voice
 from config import (
     APP_NAME, AUTO_FROM, AUTO_MIN_NEWCHARS, AUTO_THROTTLE_S, ECHO_GUARD,
-    ECHO_RATIO, ECHO_WINDOW_S, MY_NAME, NOTES_DIR, OPACITY, VISION_MONITOR,
+    ECHO_RATIO, ECHO_WINDOW_S, MY_NAME, NOTES_DIR, OPACITY, VISION_MONITOR, VOICE_ID,
 )
 from ears import Listener, list_output_devices
 
@@ -43,7 +44,9 @@ user32.SetWindowLongW.restype = ctypes.c_long
 ACCENT = "#F08A5D"        # coral: suggestions, focus, brand dot
 THEM_COLOR = "#7CC4FA"    # "Ellos" in the transcript
 YOU_COLOR = "#A3ACBE"     # "Tú" in the transcript
-SOURCE_LABELS = {"Them": "Ellos", "You": "Tú"}
+# "Room" = someone else heard on your mic (voice.py); for display, for Claude and
+# for auto-answers they count as "Them".
+SOURCE_LABELS = {"Them": "Ellos", "Room": "Ellos", "You": "Tú"}
 PANEL_RADIUS = 16
 
 AUTO_PROMPT = (
@@ -227,6 +230,7 @@ class Overlay(QWidget):
         self._auto_inflight = False
         self._pending_auto = None        # newest follow-up queued while answering
         self._recent_lines = []          # [(monotonic_ts, source, norm_text)] echo guard
+        self._voiceprint = voice.load_profile() if VOICE_ID else None
         # Streamed chunks are coalesced into one re-render every 60 ms, not one per token.
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -551,7 +555,8 @@ class Overlay(QWidget):
 
     def _start_listener(self):
         """Spawn a Listener bound to the currently-selected call-audio device."""
-        self._listener = Listener(speaker_device=self._selected_speaker())
+        self._listener = Listener(speaker_device=self._selected_speaker(),
+                                  voiceprint=self._voiceprint)
         self._listener.line.connect(self._on_transcript)
         self._listener.status.connect(self._set_status)
         self._listener.finished.connect(self._reap_listener)
@@ -621,9 +626,10 @@ class Overlay(QWidget):
         self._recent_lines.append((now, source, _norm_line(text)))
         self._recent_lines = [r for r in self._recent_lines if now - r[0] <= ECHO_WINDOW_S]
 
+        who = "You" if source == "You" else "Them"
         # The buffer sent to Claude keeps the source keys; the panel shows Spanish labels.
-        self._transcript_buf.append(f"{source}: {text}")
-        color = THEM_COLOR if source == "Them" else YOU_COLOR
+        self._transcript_buf.append(f"{who}: {text}")
+        color = YOU_COLOR if who == "You" else THEM_COLOR
         self.transcript.append(
             f'<p style="margin:0 0 6px 0"><span style="color:{color}; font-weight:600">'
             f'{SOURCE_LABELS.get(source, source)}</span>&nbsp; {html.escape(text)}</p>')
@@ -631,23 +637,23 @@ class Overlay(QWidget):
         bar.setValue(bar.maximum())
         # Only let the configured speaker(s) trigger an auto-answer — by default
         # the other side, so your own voice never makes Cluely answer itself.
-        speaker_ok = AUTO_FROM == "both" or AUTO_FROM == source.lower()
+        speaker_ok = AUTO_FROM == "both" or AUTO_FROM == who.lower()
         if self._live and self.chk_auto.isChecked() and speaker_ok:
             self._maybe_auto(text)
 
     def _is_echo(self, text, source, now):
-        """True if `text` is your own mic ("You") picking up call audio that the
-        loopback already captured as "Them" — acoustic echo from open speakers.
-        We ONLY ever drop a "You" line: the call ("Them") source drives auto-answers
-        and is ground truth for the other party, so it is never discarded even if it
-        happens to arrive after a mic echo of the same words."""
-        if not ECHO_GUARD or source != "You":
+        """True if `text` is your mic ("You", or "Room" when it isn't your voice)
+        picking up call audio that the loopback already captured as "Them" —
+        acoustic echo from open speakers. We ONLY ever drop a mic line: the call
+        ("Them") source drives auto-answers and is ground truth for the other party,
+        so it is never discarded even if it arrives after a mic echo of the same words."""
+        if not ECHO_GUARD or source == "Them":
             return False
         norm = _norm_line(text)
         if len(norm) < 8:                       # too short to tell echo from a real backchannel
             return False
         for ts, src, prev in self._recent_lines:
-            if src == source or now - ts > ECHO_WINDOW_S:
+            if src != "Them" or now - ts > ECHO_WINDOW_S:
                 continue
             if SequenceMatcher(None, norm, prev).ratio() >= ECHO_RATIO:
                 return True

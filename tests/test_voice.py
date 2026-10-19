@@ -72,6 +72,21 @@ def main():
             if not ok:
                 failures.append((name, text, score))
 
+    # The listener tags mic phrases by voice; call audio is never relabelled.
+    from PySide6.QtCore import QCoreApplication
+    from ears import Listener
+    app = QCoreApplication.instance() or QCoreApplication([])  # noqa: F841
+    listener = Listener(voiceprint=result["embedding"])
+    mine = synthesize(me, PHRASES[0], os.path.join(tmp, "mine.wav"))
+    theirs = synthesize(others[0], PHRASES[0], os.path.join(tmp, "theirs.wav"))
+    for source, audio, expected in (("You", mine, "You"), ("You", theirs, "Room"),
+                                    ("Them", mine, "Them")):
+        got = listener._label(source, audio)
+        if got != expected:
+            failures.append(("label", source, expected, got))
+    print(f"  listener labels: mine->{listener._label('You', mine)}, "
+          f"theirs->{listener._label('You', theirs)}")
+
     # Silence or a too-short phrase must not be judged at all.
     assert voice.similarity(np.zeros(8000, dtype=np.float32), result["embedding"]) is None
     try:

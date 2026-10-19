@@ -33,6 +33,17 @@ def main():
     assert ov.btn_live.text() == "●  Escuchar", "back to idle label"
     assert ov.btn_live.property("on") is False, "back to idle property"
 
+    # Someone else on the mic ("Room") shows and reaches Claude as the other side
+    ov._on_transcript("Hola, ¿cómo están todos hoy en la oficina?", "Room")
+    assert ov._transcript_buf[-1].startswith("Them: "), ov._transcript_buf[-1]
+    assert "Ellos" in ov.transcript.toPlainText(), "Room should display as Ellos"
+    # ...and a mic echo of call audio is dropped whether it is tagged You or Room
+    n = len(ov._transcript_buf)
+    ov._on_transcript("Los datos de sus clientes son de ustedes", "Them")
+    ov._on_transcript("Los datos de sus clientes son de ustedes", "Room")
+    ov._on_transcript("los datos de sus clientes son de ustedes.", "You")
+    assert len(ov._transcript_buf) == n + 1, ov._transcript_buf[n:]
+
     print("OK")
 
 

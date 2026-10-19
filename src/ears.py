@@ -3,7 +3,9 @@ own mic, transcribes both locally with faster-whisper, and emits labelled lines.
 
 Loopback hears the *other* participants (whatever your speakers play); the mic
 hears *you*. Each line is tagged "Them" or "You" so the rest of the app knows who
-spoke — e.g. only the other side's questions should trigger an auto-answer.
+spoke — e.g. only the other side's questions should trigger an auto-answer. With
+a calibrated voiceprint (voice.py), a mic phrase that isn't your voice is tagged
+"Room": someone next to you in an in-person meeting, or your speakers' echo.
 
 Capture runs as two producer threads (one per device) feeding a queue; a single
 consumer runs whisper, so there is never a concurrent transcribe on one model.
@@ -16,8 +18,9 @@ import time
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+import voice
 from config import (
-    CAPTURE_MIC, CAPTURE_SYSTEM, MIC_DEVICE, SPEAKER_DEVICE,
+    CAPTURE_MIC, CAPTURE_SYSTEM, MIC_DEVICE, SPEAKER_DEVICE, VOICE_ID, VOICE_THRESHOLD,
     WHISPER_COMPUTE, WHISPER_DEVICE, WHISPER_DIR, WHISPER_LANGUAGE, WHISPER_MODEL,
 )
 
@@ -73,11 +76,15 @@ def list_output_devices():
 
 
 class Listener(QThread):
-    line = Signal(str, str)   # (text, source); source in {"Them", "You"}
+    line = Signal(str, str)   # (text, source); source in {"Them", "You", "Room"}
     status = Signal(str)      # human-readable state
 
-    def __init__(self, speaker_device=None):
+    def __init__(self, speaker_device=None, voiceprint=None):
         super().__init__()
+        # Your calibrated voiceprint (voice.load_profile()), or None to tag every
+        # mic phrase "You" as before.
+        self._voiceprint = voiceprint if VOICE_ID else None
+        self._room_heard = False
         self._stop = threading.Event()
         self._model = None
         self._q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
@@ -174,6 +181,21 @@ class Listener(QThread):
         except Exception as exc:
             self.status.emit(f"error escuchando a {_LABEL[source]}: {type(exc).__name__}")
 
+    def _label(self, source, audio):
+        """Who said a phrase: a mic ("You") phrase that doesn't match your
+        voiceprint becomes "Room". Too-short phrases keep the mic's "You", since
+        a voiceprint of under a second isn't reliable."""
+        if source != "You" or self._voiceprint is None:
+            return source
+        try:
+            score = voice.similarity(audio, self._voiceprint)
+        except Exception:
+            return source
+        if score is not None and score < VOICE_THRESHOLD:
+            self._room_heard = True
+            return "Room"
+        return source
+
     def _push(self, source, audio):
         """Queue one phrase for the transcriber, dropping the oldest when full."""
         self._passed[source] += 1
@@ -224,7 +246,16 @@ class Listener(QThread):
                 t.join(timeout=2.0)
             return
 
+        if self._voiceprint is not None:
+            try:
+                voice.warm()   # load (first time: download) the model before phrases arrive
+            except Exception as exc:
+                self._voiceprint = None
+                self.status.emit(f"sin separación de voz ({type(exc).__name__})")
+
         label = "escuchando (tú + llamada)" if len(sources) == 2 else "escuchando"
+        if self._voiceprint is not None:
+            label += " · voz ✓"
         if CAPTURE_SYSTEM and self._loopback_name:
             label += f" · llamada: {self._loopback_name}"
         self.status.emit(label)
@@ -238,7 +269,10 @@ class Listener(QThread):
             # exact silent failure where Zoom's output device differs from this
             # one. Keying off "mic alive, call dead" avoids the false positive a
             # naive startup RMS probe would hit during legitimate silence.
+            # Other voices on the mic mean an in-person meeting, where a silent
+            # call is expected, so the warning is skipped then.
             if (not self._warned_silent and CAPTURE_SYSTEM and CAPTURE_MIC
+                    and not self._room_heard
                     and self._passed["You"] >= 2 and self._passed["Them"] == 0
                     and time.monotonic() - listen_start > 25):
                 self._warned_silent = True
@@ -258,7 +292,7 @@ class Listener(QThread):
                     self.status.emit(f"error al transcribir: {type(exc).__name__}")
                 continue
             if text:
-                self.line.emit(text, source)
+                self.line.emit(text, self._label(source, audio))
 
         for t in self._cap_threads:
             t.join(timeout=2.0)

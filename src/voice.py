@@ -72,6 +72,12 @@ def _get_extractor():
         return _extractor
 
 
+def warm():
+    """Load the model now (downloading it the first time) so the first live
+    phrase isn't slowed down by it."""
+    _get_extractor()
+
+
 def embed(audio):
     """L2-normalised voiceprint of one stretch of 16 kHz mono audio."""
     extractor = _get_extractor()
