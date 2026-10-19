@@ -22,15 +22,15 @@ def main():
     # power switch: object name + idle defaults
     assert ov.btn_live.objectName() == "power", "power objectName"
     assert ov._live is False, "should start idle"
-    assert ov.btn_live.text() == "⏻ OFF", f"idle label was {ov.btn_live.text()!r}"
+    assert ov.btn_live.text() == "●  Escuchar", f"idle label was {ov.btn_live.text()!r}"
     assert ov.btn_live.property("on") is False, "idle property"
 
     # _set_power flips label + property (pure UI, no listener)
     ov._set_power(True)
-    assert ov.btn_live.text() == "⏻ LIVE", "live label"
+    assert ov.btn_live.text() == "●  En vivo", "live label"
     assert ov.btn_live.property("on") is True, "live property"
     ov._set_power(False)
-    assert ov.btn_live.text() == "⏻ OFF", "back to idle label"
+    assert ov.btn_live.text() == "●  Escuchar", "back to idle label"
     assert ov.btn_live.property("on") is False, "back to idle property"
 
     print("OK")

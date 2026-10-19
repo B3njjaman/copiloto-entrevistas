@@ -10,12 +10,23 @@ startup and every subsequent question is just a model round-trip (~2-3s).
 Uses your existing Claude login, so there is no API key and no per-token cost.
 """
 import json
+import os
 import subprocess
 import threading
 
-from config import ANSWER_TIMEOUT_S, AUTO_MODEL, CLAUDE_CMD, CLAUDE_MODEL
+from config import ANSWER_TIMEOUT_S, AUTO_MODEL, BASE_DIR, CLAUDE_CMD, CLAUDE_MODEL
 
 CREATE_NO_WINDOW = 0x08000000
+
+# Replaces Claude Code's default agent system prompt. Keep it short and free of
+# cmd.exe metacharacters (& | < > ^ %): it travels on the command line, and an npm
+# .cmd shim runs through cmd.exe. Transcript text goes over stdin, never argv.
+SESSION_SYSTEM_PROMPT = (
+    "You are Cluely, a private real-time copilot in the user's own meetings. "
+    "You have no tools: answer directly from the transcript, notes and images you "
+    "are given. Always reply in the language the meeting or question is in; if the "
+    "transcript is in Spanish, answer in Spanish."
+)
 
 SYSTEM_PREAMBLE = (
     "You are Cluely, a private real-time copilot for the user during their own "
@@ -44,7 +55,9 @@ SYSTEM_PREAMBLE = (
 LEAN_PREAMBLE = (
     "You are Cluely, the user's private real-time copilot in their own meeting. "
     "From the live transcript, give a crisp answer the user can say out loud right "
-    "now: 1-2 plain sentences, no preamble, no lists. If nothing was actually asked "
+    "now: 1-2 plain sentences, no preamble, no lists, in the language the meeting is "
+    "in. Write only the words to say, in the user's first person: no quotes, no "
+    "restating the question, no lead-in like 'You could say'. If nothing was actually asked "
     "of the user, give one short bullet of the key point just discussed. "
     "Never produce content meant to deceive anyone evaluating the user's own ability."
 )
@@ -106,14 +119,30 @@ class _Session:
         return self._proc is not None and self._proc.poll() is None
 
     def _spawn(self):
+        # Lean session: no tools, MCP servers, user plugins/hooks, skills or
+        # CLAUDE.md. That cuts the per-turn context to ~1k tokens (faster first
+        # token, less subscription usage), means nothing said on the call can make
+        # Claude run a command or touch a file, and keeps meeting text out of
+        # ~/.claude session history. Auth still comes from the normal `claude`
+        # login (--bare would not read it).
         cmd = [
-            "cmd", "/c", CLAUDE_CMD, "-p",
+            CLAUDE_CMD, "-p",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose", "--include-partial-messages",
+            "--tools", "",
+            "--strict-mcp-config",
+            "--setting-sources", "",
+            "--disable-slash-commands",
+            "--no-session-persistence",
+            "--system-prompt", SESSION_SYSTEM_PROMPT,
         ]
         if self._model:
             cmd += ["--model", self._model]
+        # A native claude.exe runs directly; only an npm .cmd shim needs cmd.exe.
+        if CLAUDE_CMD.lower().endswith((".cmd", ".bat")):
+            cmd = ["cmd", "/c"] + cmd
+        env = dict(os.environ, CLAUDE_CODE_DISABLE_CLAUDE_MDS="1")
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -123,6 +152,8 @@ class _Session:
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            cwd=str(BASE_DIR),
+            env=env,
             creationflags=CREATE_NO_WINDOW,
         )
 

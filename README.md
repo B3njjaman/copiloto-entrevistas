@@ -1,263 +1,191 @@
-# Cluely
+<div align="center">
 
-Cluely is a screen-capture-invisible AI overlay for your own meetings and
-presentations. The panel floats on top of everything you see, but it renders
-blank in Zoom screenshare, OBS, and capture-based screenshots. It does that with
-`SetWindowDisplayAffinity` and the `WDA_EXCLUDEFROMCAPTURE` flag. It runs on a
-warm headless Claude using your existing `claude` login, so there's no API key
-and no per-token cost. It listens to the call locally and can answer questions
-out loud in real time.
+# Copiloto
 
-**Intended use:** your own meetings, demos, and presentations. Not for
-interviews, exams, or any setting that measures your own unaided ability. The
-backend prompt refuses to produce content meant to deceive anyone evaluating
-you.
+**Ocupa tu suscripción de Claude para apoyarte en las entrevistas.**
 
-## How it works
+Un widget para Windows que escucha tu llamada, transcribe en tu PC y, cuando te
+hacen una pregunta, te muestra qué responder en un par de segundos.
+Sin API key y sin pagar por token: usa tu login de Claude Code (Pro o Max).
+
+<img src="assets/screenshots/hero.png" alt="El widget Copiloto flotando sobre una videollamada, con dos respuestas sugeridas y una pregunta escrita a Claude" width="100%" />
+
+</div>
+
+## Qué hace
+
+- **Escucha las dos partes de la llamada.** El audio de los demás sale de tus parlantes (WASAPI loopback) y el tuyo del micrófono. Lo transcribe [faster-whisper](https://github.com/SYSTRAN/faster-whisper) en tu PC, en español por defecto.
+- **Detecta cuándo te preguntan algo** (`¿…?`, “¿qué opinas?”, “cuéntanos…”, tu nombre) y te sugiere una respuesta corta, lista para decirla en voz alta.
+- **Responde rápido.** La respuesta empieza a aparecer ~2 s después de que terminan de preguntar, y se va escribiendo en vivo.
+- **Lee tu pantalla** con un atajo: un diagrama, una planilla, un correo, un problema de código.
+- **No aparece al compartir pantalla** ni en grabaciones (`WDA_EXCLUDEFROMCAPTURE`).
+- **Tus notas como contexto.** Lo que escribes en *Notas* (el cliente, tu propuesta, precios, objeciones) viaja con cada pregunta.
+
+## Capturas
+
+<img src="assets/screenshots/panels.png" alt="Tres vistas del panel: inicio, respuestas sugeridas y transcripción con Ellos y Tú" width="100%" />
+
+| Inicio | Respuestas | Transcripción |
+| --- | --- | --- |
+| El botón coral activa la escucha. | Las sugerencias (**DI ESTO**) van más grandes para leerlas de un vistazo. | Cada línea dice quién habló: **Ellos** o **Tú**. |
+
+Así lo ve la otra persona cuando compartes pantalla:
+
+<img src="assets/screenshots/invisible.png" alt="Comparación: a la izquierda tu pantalla con el widget; a la derecha lo que ven los demás al compartir, sin el widget" width="100%" />
+
+> Las capturas se generan con `scripts/screenshots.py` usando datos de ejemplo
+> inventados. El panel no se puede capturar con una captura de pantalla normal,
+> justamente porque es invisible para ellas.
+
+## Cómo funciona
 
 ```mermaid
-flowchart TD
-    MIC["Your mic"] --> EARS["Listener: faster-whisper, local"]
-    SYS["Call audio via WASAPI loopback"] --> EARS
-    EARS --> TRANSCRIPT["Transcript: Them / You"]
-    TRANSCRIPT --> DETECT{"Question aimed at you?"}
-    DETECT -->|yes| FAST["Warm Claude: fast session"]
-    TYPED["Typed question"] --> MAIN["Warm Claude: main session"]
-    SCREEN["Solve screen or attached image"] --> MAIN
-    FAST --> ANSWERS["Answers: say it out loud"]
-    MAIN --> ANSWERS
-    subgraph panel["Overlay panel, invisible to screen capture"]
-        TRANSCRIPT
-        ANSWERS
-    end
+flowchart LR
+    SYS["Audio de la llamada<br/>(WASAPI loopback)"] --> EARS["faster-whisper<br/>local, en tu GPU"]
+    MIC["Tu micrófono"] --> EARS
+    EARS --> T["Transcripción<br/>Ellos / Tú"]
+    T --> Q{"¿Te preguntaron algo?"}
+    Q -->|sí| FAST["Claude Haiku<br/>sesión rápida"]
+    TYPED["Pregunta escrita<br/>o tu pantalla"] --> MAIN["Claude<br/>sesión principal"]
+    FAST --> UI["Panel invisible<br/>al compartir"]
+    MAIN --> UI
 ```
 
-Two audio sources feed one local transcriber. Your mic gives the `You` lines.
-The call's own speaker output, captured through WASAPI loopback, gives the `Them`
-lines. faster-whisper turns both into text in the `Transcript` tab. When a line
-from the other side looks like a question aimed at you, Cluely sends the recent
-transcript to a fast Claude session and streams a short answer into the
-`Answers` tab. Typed questions and screen or image questions go to a stronger
-session instead. None of the panel shows up in a screen share.
+Al abrirse, la app deja **dos procesos `claude -p` encendidos** (modo
+`stream-json`), así cada pregunta es solo un viaje al modelo y no paga el
+arranque de Claude Code cada vez. Esas sesiones se lanzan “peladas”:
 
-## Requirements
+| Flag | Para qué |
+| --- | --- |
+| `--tools ""` | Sin herramientas: nada de lo que se diga en la llamada puede hacer que Claude ejecute comandos o lea archivos. |
+| `--strict-mcp-config`, `--setting-sources project`, `--disable-slash-commands` | Sin servidores MCP, plugins, hooks ni skills: arranca más rápido y gasta menos cuota. |
+| `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` | No carga tus CLAUDE.md (el contexto baja de ~2.800 a ~1.000 tokens). |
+| `--system-prompt` corto | Reemplaza el prompt de agente de Claude Code por uno de copiloto de reuniones. |
+| `--no-session-persistence` | Lo que se habló no queda guardado en `~/.claude`. |
 
-Cluely is Windows-only. It leans on Windows APIs: `SetWindowDisplayAffinity`
-for capture exclusion, WASAPI loopback for call audio, `pythonw.exe` for the
-console-less launcher, and `.lnk` shortcuts.
+## Velocidad
 
-- Windows 10 or 11
-- Python 3.10 or newer
-- The Claude CLI, installed and logged in. Cluely uses your local login, so you
-  don't need an API key. Check it with `claude --version`. If `claude` isn't on
-  your PATH, set `CLUELY_CLAUDE_CMD` to its full path.
-- A GPU is optional. Set `CLUELY_WHISPER_DEVICE=cuda` to speed up
-  transcription. It falls back to CPU on its own if the CUDA libraries aren't
-  there.
+Medido en un i7-7700HQ con GTX 1060 6 GB, Windows 10, suscripción de Claude:
 
-## Setup
+| Etapa | Tiempo |
+| --- | --- |
+| Detectar que la persona terminó la frase (pausa de 0,5 s) y transcribirla con `small` en la GPU | ~1,0 s |
+| Claude Haiku, desde que recibe el texto hasta la primera palabra | ~1,0 s |
+| **Desde que terminan de preguntar hasta que ves la respuesta** | **~2,0 s** |
+| Arranque, una sola vez al abrir (sesiones de Claude listas) | ~6 s |
 
-From a clone of the repo:
+Sin GPU, Whisper `small` tarda ~5 s por frase en ese procesador: funciona,
+pero la respuesta llega bastante después. Con `large-v3-turbo` la puntuación
+mejora un poco, pero en una GTX 1060 tarda ~2,6 s por frase.
+
+## Requisitos
+
+- Windows 10 (versión 2004 o posterior) u 11.
+- Python 3.10 o posterior.
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) instalado y con sesión iniciada con tu cuenta Pro o Max (`claude` en la terminal debe funcionar).
+- Opcional: GPU NVIDIA para transcribir más rápido. Sin GPU usa la CPU sola.
+
+## Instalación
 
 ```powershell
+git clone https://github.com/B3njjaman/copiloto-entrevistas.git
+cd copiloto-entrevistas
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Then create the launcher shortcut once (optional):
+Crea el acceso directo en el Escritorio y en el menú Inicio (una vez):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\install_shortcut.ps1
 ```
 
-That drops a `Cluely` shortcut on your Desktop and in the Start Menu. Right-click
-it to pin to the taskbar.
+¿Poco espacio en `C:`? Las librerías de CUDA pesan cerca de 1,5 GB. Puedes
+crear el entorno en otro disco y apuntar el acceso directo a él con
+`-Venv D:\ruta\al\venv`. Para guardar también allí los modelos de Whisper, usa
+`CLUELY_WHISPER_DIR` (ver [Configuración](#configuración)).
 
-## Run
+## Uso
 
-Double-click the `Cluely` shortcut. It launches console-less through `pythonw`.
-Or run it directly:
+1. Abre **Copiloto** desde el acceso directo (o `.\.venv\Scripts\python.exe src\main.py`).
+2. Escribe en **Notas** el contexto de la reunión: quién es el cliente, qué le ofreces, precios.
+3. En **Audio de la llamada**, elige la misma salida que usa Zoom, Meet o Teams como altavoz.
+4. Pulsa **● Escuchar**. Cuando te pregunten algo, aparece una tarjeta **DI ESTO**.
 
-```powershell
-.\.venv\Scripts\python.exe src\main.py
-```
+La primera vez descarga el modelo de Whisper (`small`, ~480 MB).
 
-On launch it warms the Claude session in the background. That warm-up takes about
-5 to 7 seconds, once, so your first real question is fast.
+| Atajo | Acción |
+| --- | --- |
+| `Ctrl+Alt+Space` | Escuchar / dejar de escuchar |
+| `Ctrl+Alt+H` | Mostrar / ocultar el panel |
+| `Ctrl+Alt+A` | Escribirle a Claude |
+| `Ctrl+Alt+S` | Leer la pantalla |
+| `Ctrl+Alt+I` | Adjuntar imagen (portapapeles o archivo) |
+| `Ctrl+Alt+T` | El mouse atraviesa el panel |
+| `Ctrl+Alt+Q` | Guardar notas y salir |
 
-## Live mode
+## Configuración
 
-Click the `⏻ OFF` power switch (or press `Ctrl+Alt+Space`) to start listening.
-Cluely captures both sides of the call locally and transcribes them into the
-`Transcript` tab. Each line is tagged `Them` for the other participants (WASAPI
-loopback) or `You` for your own mic. With `Auto-answer` checked, when the other
-side asks something aimed at you, Cluely streams a short say-it-out-loud answer
-into the `Answers` tab. Flip the switch off the same way to stop.
+Copia `copiloto.env.example` a `copiloto.env` y descomenta lo que quieras
+cambiar (las variables de entorno reales tienen prioridad). Las variables
+conservan el prefijo `CLUELY_` del proyecto original.
 
-The mic hears you too. A solo test still transcribes your own voice, and in a
-real meeting Cluely has both halves of the conversation as context.
+| Variable | Por defecto | Qué hace |
+| --- | --- | --- |
+| `CLUELY_MY_NAME` | vacío | Tu nombre: “Ana, ¿qué opinas?” cuenta como pregunta para ti. |
+| `CLUELY_WHISPER_LANGUAGE` | `es` | Idioma de la llamada (`es`, `en`, … o `auto`). |
+| `CLUELY_WHISPER_MODEL` | `small` | `small` es rápido; `medium` o `large-v3-turbo` son más precisos y más lentos. |
+| `CLUELY_WHISPER_DEVICE` | `cuda` | `cuda` (GPU) o `cpu`. Si falla la GPU, cae a CPU solo. |
+| `CLUELY_WHISPER_DIR` | caché de Hugging Face | Carpeta donde se descargan los modelos. |
+| `CLUELY_PAUSE_SECONDS` | `0.5` | Silencio que marca el fin de una frase. Menos = respuesta antes, pero puede partir frases. |
+| `CLUELY_CHUNK_SECONDS` | `6.0` | Largo máximo de una frase si la persona no hace pausas. |
+| `CLUELY_AUTO_MODEL` | `haiku` | Modelo para las sugerencias en vivo. |
+| `CLUELY_CLAUDE_MODEL` | el de tu cuenta | Modelo para preguntas escritas y de pantalla. |
+| `CLUELY_AUTO_FROM` | `them` | Quién puede disparar una sugerencia: `them`, `you` o `both`. |
+| `CLUELY_SPEAKER_DEVICE` / `CLUELY_MIC_DEVICE` | predeterminados | Fijar dispositivos por nombre. |
+| `CLUELY_CLAUDE_CMD` | `claude` del PATH | Ruta al CLI de Claude si no está en el PATH. |
+| `CLUELY_ANSWER_TIMEOUT` | `90` | Segundos antes de reiniciar una sesión colgada. |
+| `CLUELY_ECHO_GUARD` | `1` | Descarta tu micrófono cuando repite lo que ya sonó por los parlantes. |
+| `CLUELY_VISION_MONITOR` | `1` | Monitor que lee *Leer pantalla* (`0` = todos). |
+| `CLUELY_OPACITY` | `0.93` | Opacidad del panel. |
 
-If you set `CLUELY_MY_NAME`, Cluely treats a line that says your name as a
-question aimed at you. So "Ada, what do you think?" triggers an answer even
-when whisper drops the question mark. It defaults to empty, so no name is built
-into the code.
+## Solución de problemas
 
-### The one setting that has to be right: Call audio
+**Nunca aparecen líneas de “Ellos”.** La salida elegida en *Audio de la
+llamada* no es la que usa tu app de videollamada. Elige la misma. Después de
+~25 s sin audio de la llamada, el panel te avisa.
 
-WASAPI loopback is endpoint-specific. It records exactly one speaker output, not
-all sound on the machine. The `Call audio` picker chooses which one, and it has
-to match the device Zoom plays the call through (Zoom, then Settings, then Audio,
-then Speaker). If they differ, Cluely loopbacks a silent endpoint. It captures
-zero `Them` lines and never auto-answers, and no error is shown. This is common
-when you have a headset, a virtual cable, Steam streaming audio, or a second
-monitor's HDMI output.
+**Responde en otro idioma o transcribe mal.** Revisa `CLUELY_WHISPER_LANGUAGE`.
+Si la llamada mezcla idiomas, prueba `auto`.
 
-While live, the status line shows the captured device as `call: ...`. If your mic
-is active but the call stays silent for about 25 seconds, it warns
-`⚠ no call audio`. Pick the matching device and the warning clears. You can
-switch mid-meeting and it restarts the listener.
+**“no response (… needs `claude` re-login)”.** Abre una terminal, ejecuta
+`claude` y vuelve a iniciar sesión.
 
-### One answer at a time
+**Va lento al transcribir.** Si el estado dice “uso CPU”, la GPU no cargó.
+Instala los drivers de NVIDIA al día. Para que la respuesta salga antes, baja `CLUELY_PAUSE_SECONDS` a `0.4`.
 
-Auto-answers never overlap. A single answer runs at a time so two can't garble
-each other. If another question arrives while Cluely is still answering, the
-newest one is queued and fires the instant the current answer finishes. Older
-mid-answer questions are dropped, so by the time you're free the live one is the
-most recent question. A question you type runs on its own and doesn't disturb the
-auto queue. If a model turn ever stalls, a watchdog (`CLUELY_ANSWER_TIMEOUT`,
-default 90s) kills and respawns the session so answering can't wedge.
+## Privacidad y uso responsable
 
-### Echo and cross-talk guard
+- El audio se transcribe en tu PC. A Claude solo viaja texto (y la imagen de tu
+  pantalla cuando tú la pides), por la misma sesión de Claude Code que ya usas.
+- Las notas y transcripciones quedan en `notes/`, que está en `.gitignore`.
+  Contienen palabras de otras personas: no las subas a ningún lado.
+- Pensado para **tus** reuniones: llamadas con clientes, entrevistas que tú
+  conduces, presentaciones y demos. No es para pruebas o evaluaciones donde se
+  mide tu capacidad sin ayuda; el prompt se niega a producir contenido para
+  engañar a quien te evalúa.
+- Respeta las reglas de cada reunión y la ley local sobre transcribir conversaciones.
+- Usa Claude Code en modo headless (`claude -p`) con tu propio login, y consume
+  los límites de uso de tu suscripción. Es para uso personal: no lo ofrezcas
+  como servicio con cuentas de otras personas.
 
-Cluely hears both your speakers (loopback) and your mic, so the same sentence
-can land twice. Your speakers get re-heard by the mic, or mic sidetone leaks into
-the loopback stream. A near-duplicate of a recent line from the other source is
-treated as that echo and dropped. The transcript isn't double-logged, and your
-own voice can't trigger an answer to a question that was really asked of you.
-Tune or disable it with the `CLUELY_ECHO_*` vars below.
+## Créditos
 
-## Vision and images
+Basado en [Ronils-Cluely-OPENSOURCE](https://github.com/ron2k1/Ronils-Cluely-OPENSOURCE)
+de [@ron2k1](https://github.com/ron2k1) (Apache-2.0). Los cambios están en
+[CHANGELOG.md](CHANGELOG.md) y en [NOTICE](NOTICE). “Cluely” es una marca de su
+respectivo dueño; este proyecto no está afiliado a Cluely ni a Anthropic.
 
-Cluely can also see, which helps with anything audio can't catch. A diagram on
-the shared screen, a coding problem, a chart.
+## Licencia
 
-- `Solve screen` (or `Ctrl+Alt+S`) captures your screen and asks Claude to read
-  or solve what's on it. Cluely's own panel is excluded from that capture, so it
-  never shows up in the image. Set `CLUELY_VISION_MONITOR` to pick the monitor
-  (0 is all, 1 is primary, 2 is the next one).
-- Attach an image three ways, all the same underneath: the `📎` button next to
-  the question box, `Ctrl+V` in the question box when an image is on the
-  clipboard, or the `Ctrl+Alt+I` hotkey. Each uses a copied image if one is on
-  the clipboard, otherwise it opens a file picker. Whatever you typed in the box
-  becomes your question about the image. Leave it empty for a default "what is
-  this, solve or explain it." Images are PNG-encoded in memory with no temp
-  files.
-
-Any answer with code in it ends with a "Read aloud (line by line)" section. That's
-a spoken script walking through the solution one line at a time in plain sentences
-you can read out. Image questions cost more tokens, so they stay off the
-auto-answer path to keep live answering fast.
-
-## On-screen controls
-
-The panel has two always-visible buttons on top of the hotkeys:
-
-- `⏻ OFF` / `⏻ LIVE` is the power switch. Click to start or stop listening and
-  auto-answer, same as `Ctrl+Alt+Space`. Grey is idle. Green is live.
-- `×` (top-right) closes Cluely. It saves your notes first, same as
-  `Ctrl+Alt+Q`.
-
-Launching from the shortcut opens the panel idle. Flip the power switch when you
-want it listening.
-
-## Hotkeys
-
-| Keys           | Action                              |
-| -------------- | ----------------------------------- |
-| Ctrl+Alt+Space | toggle live mode (listen + answer)  |
-| Ctrl+Alt+H     | show / hide the overlay             |
-| Ctrl+Alt+A     | show and focus the question box     |
-| Ctrl+Alt+S     | capture the screen and solve it     |
-| Ctrl+Alt+I     | attach an image (clipboard or file) |
-| Ctrl+Alt+T     | toggle click-through (mouse passes) |
-| Ctrl+Alt+Q     | save notes and quit                 |
-
-## Speed
-
-A cold `claude -p` pays full session-init on every call, about 5 to 7 seconds of
-SessionStart hooks. Cluely keeps one `claude` process alive in stream-json input
-mode, so that cost is paid once at startup. Every answer after that is just a
-model round-trip, measured around 2 to 3 seconds. Voiced auto-answers run on a
-separate fast session (`CLUELY_AUTO_MODEL`, default `haiku`) with a lean
-preamble, so they come back quicker than typed or vision answers, which use the
-stronger model.
-
-Voiced-answer latency is roughly the capture window (at most
-`CLUELY_CHUNK_SECONDS`, default 2s) plus whisper decode plus the model
-round-trip. The biggest lever left is transcription. If your machine has a GPU,
-set `CLUELY_WHISPER_DEVICE=cuda` to cut the decode leg.
-
-## Troubleshooting
-
-**Auto-answer never fires, or no `Them` lines show up.** Almost always the
-`Call audio` device doesn't match Zoom's Speaker output. See the call-audio note
-above and set both to the same device. Quick check: talk while live. If you see
-`You:` lines but never `Them:` lines, the call endpoint is wrong.
-
-**Your own voice triggers answers, or the transcript double-logs.** The echo
-guard drops a mic line that near-duplicates recent call audio. If it's too
-aggressive on your setup, raise `CLUELY_ECHO_RATIO` toward `1.0`, or turn it off
-with `CLUELY_ECHO_GUARD=0`.
-
-**A quiet or very short question gets missed.** The volume gate scores the
-loudest half-second of the window rather than the whole-window average, so brief
-speech survives. If a very soft speaker still gets dropped, raise mic volume or
-lower `CLUELY_CHUNK_SECONDS`.
-
-## Privacy
-
-Cluely runs locally. Audio is transcribed on your machine with faster-whisper.
-The text that goes to Claude rides the same warm `claude` login you already use
-from the terminal.
-
-Your notes, transcripts, and saved answers stay on your machine. The `notes/`
-folder is gitignored and never committed. That matters because a transcript holds
-other people's words from the call, and those should not leave your machine. This
-repo is public, so never commit anything from `notes/`, and don't paste real
-meeting content into the code or docs.
-
-## Config
-
-All settings are environment variables (see `src/config.py`):
-
-- `CLUELY_CLAUDE_CMD`: full path to the Claude CLI. Defaults to `claude` on your
-  PATH, then the npm-global location. Set it if `claude` isn't on your PATH.
-- `CLUELY_MY_NAME`: your name, so a spoken "Ada?" counts as a question aimed
-  at you. Empty by default, and each name word is matched.
-- `CLUELY_CLAUDE_MODEL`: model for typed and vision (code) questions. Defaults to
-  your account default.
-- `CLUELY_AUTO_MODEL`: fast model for live voiced auto-answers. Default `haiku`.
-  Set it to `""` to share one session with `CLUELY_CLAUDE_MODEL`.
-- `CLUELY_CHUNK_SECONDS`: audio window before a line is transcribed. Lower means
-  faster pickup and slightly less accuracy. Default `2.0`.
-- `CLUELY_WHISPER_MODEL` / `_DEVICE` / `_COMPUTE`: transcription size and
-  backend. Defaults `base.en`, `cpu`, `int8`. Set `_DEVICE=cuda` for GPU.
-- `CLUELY_CAPTURE_SYSTEM` / `CLUELY_CAPTURE_MIC`: capture the other side and
-  your own mic. Both default on.
-- `CLUELY_SPEAKER_DEVICE` / `CLUELY_MIC_DEVICE`: pin capture devices by name.
-  Defaults to the system default.
-- `CLUELY_AUTO_THROTTLE` / `CLUELY_AUTO_MINCHARS`: auto-answer pacing.
-- `CLUELY_AUTO_FROM`: whose lines may trigger an auto-answer. One of `them`,
-  `you`, or `both`. Default `them`.
-- `CLUELY_ANSWER_TIMEOUT`: seconds before a stalled model turn is killed and the
-  session respawned. Default `90`.
-- `CLUELY_ECHO_GUARD`: drop near-duplicate cross-source lines (echo or
-  sidetone). `1` on (default), `0` off.
-- `CLUELY_ECHO_WINDOW` / `CLUELY_ECHO_RATIO`: echo lookback seconds (default
-  `6`) and similarity threshold from 0 to 1 (default `0.80`).
-- `CLUELY_VISION_MONITOR`: which screen `Solve screen` captures. Default `1`.
-- `CLUELY_OPACITY`: panel opacity.
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. Ver [LICENSE](LICENSE).

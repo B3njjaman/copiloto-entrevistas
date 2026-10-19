@@ -18,3 +18,7 @@ notes/*
 
 # Internal design/planning notes are kept local, not published.
 docs/superpowers/
+
+# Local config (may hold device names and paths) and downloaded whisper models.
+copiloto.env
+models/

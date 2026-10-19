@@ -1,16 +1,41 @@
-"""Central configuration for Cluely.
+"""Central configuration for Copiloto.
 
 Everything is overridable via environment variables so you can tune behaviour
-without editing code (e.g. set CLUELY_WHISPER_MODEL=medium.en for accuracy).
+without editing code (e.g. set CLUELY_WHISPER_MODEL=medium for accuracy). The
+same KEY=value lines can live in a `copiloto.env` file at the repo root, which
+is handy because the desktop shortcut can't carry environment variables.
 """
 import os
 import shutil
 from pathlib import Path
 
-APP_NAME = "Cluely"
+APP_NAME = "Copiloto"
 BASE_DIR = Path(__file__).resolve().parent.parent
 NOTES_DIR = BASE_DIR / "notes"
 NOTES_DIR.mkdir(exist_ok=True)
+
+
+def _load_env_file(path: Path):
+    """Read KEY=value lines (blank lines, # comments and empty values skipped;
+    a trailing " # note" is dropped). Real environment variables win, so the
+    file only fills in what isn't set. A bad file never stops the app."""
+    try:
+        text = path.read_text(encoding="utf-8-sig")  # -sig: Notepad adds a BOM
+    except (OSError, UnicodeDecodeError):
+        return
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.split(" #", 1)[0].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key.strip() and value:
+            os.environ.setdefault(key.strip(), value)
+
+
+_load_env_file(BASE_DIR / "copiloto.env")
 
 # --- Headless Claude (uses your existing `claude` login, no API key needed) ---
 def _resolve_claude_cmd() -> str:
@@ -40,10 +65,17 @@ AUTO_MODEL = os.environ.get("CLUELY_AUTO_MODEL", "haiku")
 ANSWER_TIMEOUT_S = float(os.environ.get("CLUELY_ANSWER_TIMEOUT", "90"))
 
 # --- Local transcription (faster-whisper) ---
-# CPU/base.en is the reliable default; set CLUELY_WHISPER_DEVICE=cuda for GPU.
-WHISPER_MODEL = os.environ.get("CLUELY_WHISPER_MODEL", "base.en")
-WHISPER_DEVICE = os.environ.get("CLUELY_WHISPER_DEVICE", "cpu")
+# Multilingual model on the GPU by default; it falls back to CPU on its own if the
+# CUDA libraries aren't there. English-only models (*.en) need LANGUAGE=en.
+WHISPER_MODEL = os.environ.get("CLUELY_WHISPER_MODEL", "small")
+WHISPER_DEVICE = os.environ.get("CLUELY_WHISPER_DEVICE", "cuda")
 WHISPER_COMPUTE = os.environ.get("CLUELY_WHISPER_COMPUTE", "int8")
+# Where models are downloaded ("" = the Hugging Face cache in your user folder).
+WHISPER_DIR = os.environ.get("CLUELY_WHISPER_DIR", "").strip() or None
+# Spoken language of the call: "es", "en", … or "auto" to detect it per chunk
+# (slower and less reliable on 2s chunks, so pin it when you know it).
+_lang = os.environ.get("CLUELY_WHISPER_LANGUAGE", "es").strip().lower()
+WHISPER_LANGUAGE = None if _lang in ("", "auto") else _lang
 
 # --- Live listening sources ---
 # Capture the other participants (system audio via loopback) and/or your own mic.

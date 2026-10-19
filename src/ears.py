@@ -18,16 +18,21 @@ from PySide6.QtCore import QThread, Signal
 
 from config import (
     CAPTURE_MIC, CAPTURE_SYSTEM, MIC_DEVICE, SPEAKER_DEVICE,
-    WHISPER_COMPUTE, WHISPER_DEVICE, WHISPER_MODEL,
+    WHISPER_COMPUTE, WHISPER_DEVICE, WHISPER_DIR, WHISPER_LANGUAGE, WHISPER_MODEL,
 )
 
 SAMPLE_RATE = 16000
-# Shorter chunk = a voiced question reaches whisper sooner (lower pickup latency).
-# 2s is the sweet spot for base.en on CPU; raise for a bit more accuracy.
-CHUNK_SECONDS = float(os.environ.get("CLUELY_CHUNK_SECONDS", "2.0"))
-SUB_SECONDS = 0.5         # capture in small blocks so stop reacts in ~0.5s
-RMS_GATE = 0.006          # skip near-silent chunks (whisper hallucinates on silence)
-_QUEUE_MAX = 8            # ~32s buffered before we drop oldest to stay real-time
+# Speech is cut into segments at the speaker's pauses, so each transcript line is
+# a whole phrase. Fixed 2s windows split questions in half ("¿Cuánto" | "tiempo
+# les tomaría…"), which broke question detection and answered the wrong thing.
+# A segment ends after PAUSE_SECONDS of quiet, or at CHUNK_SECONDS if the speaker
+# never pauses. Lower PAUSE = faster pickup but more phrases cut mid-thought.
+CHUNK_SECONDS = float(os.environ.get("CLUELY_CHUNK_SECONDS", "6.0"))
+PAUSE_SECONDS = float(os.environ.get("CLUELY_PAUSE_SECONDS", "0.5"))
+SUB_SECONDS = 0.25        # capture block: pause-detection granularity and stop latency
+RMS_GATE = 0.006          # a block quieter than this counts as silence
+_QUEUE_MAX = 8            # segments buffered before we drop the oldest to stay real-time
+_LABEL = {"Them": "la llamada", "You": "tu micrófono"}  # status-line wording
 
 
 def _add_cuda_dlls():
@@ -84,6 +89,7 @@ class Listener(QThread):
         # silent-loopback (wrong-endpoint) failure: mic active but call dead.
         self._passed = {"Them": 0, "You": 0}
         self._warned_silent = False
+        self._warned_decode = False
 
     def stop(self):
         self._stop.set()
@@ -93,12 +99,21 @@ class Listener(QThread):
         if WHISPER_DEVICE == "cuda":
             _add_cuda_dlls()
             try:
-                self.status.emit(f"loading whisper ({WHISPER_MODEL}, cuda)…")
-                return WhisperModel(WHISPER_MODEL, device="cuda", compute_type=WHISPER_COMPUTE)
+                self.status.emit(f"cargando whisper ({WHISPER_MODEL}, GPU)…")
+                model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type=WHISPER_COMPUTE,
+                                     download_root=WHISPER_DIR)
+                # A missing cuBLAS/cuDNN DLL often fails only on the first decode,
+                # so run one now (segments are lazy: list() forces it) while the
+                # CPU fallback below can still catch it.
+                segments, _ = model.transcribe(np.zeros(SAMPLE_RATE, dtype=np.float32),
+                                               language=WHISPER_LANGUAGE, beam_size=1)
+                list(segments)
+                return model
             except Exception as exc:
-                self.status.emit(f"GPU unavailable ({type(exc).__name__}); using CPU")
-        self.status.emit(f"loading whisper ({WHISPER_MODEL}, cpu)…")
-        return WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+                self.status.emit(f"GPU no disponible ({type(exc).__name__}); uso CPU")
+        self.status.emit(f"cargando whisper ({WHISPER_MODEL}, CPU)…")
+        return WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8",
+                            download_root=WHISPER_DIR)
 
     def _open_loopback(self, sc):
         name = self._loopback_name or self._speaker_device or SPEAKER_DEVICE \
@@ -111,59 +126,67 @@ class Listener(QThread):
         return sc.default_microphone()
 
     def _capture(self, source, opener):
-        """Producer: record one device in small sub-blocks, accumulate to a full
-        chunk, gate on RMS, push (source, audio) onto the queue. Device errors are
-        per-source, so one dead device never silences the other."""
+        """Producer: record one device in small blocks and cut the stream into
+        phrases at pauses (see PAUSE_SECONDS), pushing (source, audio) onto the
+        queue. Silence between phrases is never sent to whisper, which
+        hallucinates on it. Device errors are per-source, so one dead device
+        never silences the other."""
         import soundcard as sc
         try:
             dev = opener(sc)
         except Exception as exc:
-            self.status.emit(f"{source} audio unavailable ({type(exc).__name__})")
+            self.status.emit(f"sin audio de {_LABEL[source]} ({type(exc).__name__})")
             return
         sub = int(SAMPLE_RATE * SUB_SECONDS)
-        full = int(SAMPLE_RATE * CHUNK_SECONDS)
+        max_blocks = max(1, round(CHUNK_SECONDS / SUB_SECONDS))
+        pause_blocks = max(1, round(PAUSE_SECONDS / SUB_SECONDS))
         try:
-            with dev.recorder(samplerate=SAMPLE_RATE, channels=1) as rec:
-                buf: list = []
-                have = 0
+            # blocksize sets the WASAPI buffer. soundcard's default is one device
+            # period (~10 ms), so any stall of this thread while whisper decodes
+            # dropped audio ("data discontinuity") and lost words. 1 s of buffer
+            # adds no latency: blocks are still read as soon as they arrive.
+            with dev.recorder(samplerate=SAMPLE_RATE, channels=1,
+                              blocksize=SAMPLE_RATE) as rec:
+                seg: list = []   # blocks of the phrase in progress
+                quiet = 0        # consecutive quiet blocks at its end
+                pre = None       # last quiet block, kept so a soft onset isn't clipped
                 while not self._stop.is_set():
                     block = np.asarray(rec.record(numframes=sub), dtype=np.float32).reshape(-1)
-                    if block.size:
-                        buf.append(block)
-                        have += block.size
-                    if have < full:
+                    if not block.size:
                         continue
-                    audio = np.concatenate(buf)
-                    # Gate on the LOUDEST 0.5s sub-block, not the whole-window
-                    # mean. A brief or quiet utterance embedded in silence (a
-                    # short "yes?", a soft-spoken question over VoIP) averages
-                    # below the gate across the full 2s window and would vanish,
-                    # even though the speech itself clears the threshold. Peak-
-                    # gating keeps it while still rejecting fully-silent windows.
-                    peak = max((float(np.sqrt(np.mean(b * b))) for b in buf),
-                               default=0.0)
-                    buf, have = [], 0
-                    if peak < RMS_GATE:
+                    loud = float(np.sqrt(np.mean(block * block))) >= RMS_GATE
+                    if not seg:
+                        if loud:
+                            seg = [block] if pre is None else [pre, block]
+                            quiet = 0
+                        else:
+                            pre = block
                         continue
-                    self._passed[source] += 1
-                    try:
-                        self._q.put_nowait((source, audio))
-                    except queue.Full:
-                        try:
-                            self._q.get_nowait()              # drop oldest, keep recent
-                            self._q.put_nowait((source, audio))
-                        except (queue.Empty, queue.Full):
-                            pass  # raced with the other producer; just drop this chunk
+                    seg.append(block)
+                    quiet = 0 if loud else quiet + 1
+                    if quiet >= pause_blocks or len(seg) >= max_blocks:
+                        self._push(source, np.concatenate(seg))
+                        # Reuse the trailing quiet block as the next phrase's
+                        # lead-in: whisper drops the first word ("¿Cuánto…")
+                        # when audio starts abruptly on it.
+                        pre = None if loud else block
+                        seg, quiet = [], 0
         except Exception as exc:
-            self.status.emit(f"{source} listen error: {type(exc).__name__}")
+            self.status.emit(f"error escuchando a {_LABEL[source]}: {type(exc).__name__}")
+
+    def _push(self, source, audio):
+        """Queue one phrase for the transcriber, dropping the oldest when full."""
+        self._passed[source] += 1
+        try:
+            self._q.put_nowait((source, audio))
+        except queue.Full:
+            try:
+                self._q.get_nowait()              # drop oldest, keep recent
+                self._q.put_nowait((source, audio))
+            except (queue.Empty, queue.Full):
+                pass  # raced with the other producer; just drop this phrase
 
     def run(self):
-        try:
-            self._model = self._load_model()
-        except Exception as exc:
-            self.status.emit(f"whisper load error: {exc}")
-            return
-
         # Resolve the loopback endpoint name ONCE so the producer opens a fixed
         # device and the status line can show the user exactly what's captured.
         if CAPTURE_SYSTEM:
@@ -181,17 +204,29 @@ class Listener(QThread):
         if CAPTURE_MIC:
             sources.append(("You", self._open_mic))
         if not sources:
-            self.status.emit("no audio sources enabled")
+            self.status.emit("no hay fuentes de audio activas")
             return
 
+        # Capture starts before the model loads (that can take ~15s from a slow
+        # disk): chunks wait in the queue (up to _QUEUE_MAX) and are transcribed
+        # once it's ready, so the first question of the call isn't lost.
         for src, opener in sources:
             t = threading.Thread(target=self._capture, args=(src, opener), daemon=True)
             t.start()
             self._cap_threads.append(t)
 
-        label = "listening (you + call)" if len(sources) == 2 else "listening"
+        try:
+            self._model = self._load_model()
+        except Exception as exc:
+            self.status.emit(f"error al cargar whisper: {exc}")
+            self._stop.set()
+            for t in self._cap_threads:
+                t.join(timeout=2.0)
+            return
+
+        label = "escuchando (tú + llamada)" if len(sources) == 2 else "escuchando"
         if CAPTURE_SYSTEM and self._loopback_name:
-            label += f" · call: {self._loopback_name}"
+            label += f" · llamada: {self._loopback_name}"
         self.status.emit(label)
 
         # Consumer: serialize whisper across both sources (one model, no races).
@@ -207,21 +242,24 @@ class Listener(QThread):
                     and self._passed["You"] >= 2 and self._passed["Them"] == 0
                     and time.monotonic() - listen_start > 25):
                 self._warned_silent = True
-                self.status.emit("⚠ no call audio — set 'Call audio' to Zoom's speaker")
+                self.status.emit("⚠ no oigo la llamada: elige la salida que usa Zoom/Meet")
             try:
                 source, audio = self._q.get(timeout=0.3)
             except queue.Empty:
                 continue
             try:
                 segments, _ = self._model.transcribe(
-                    audio, language="en", beam_size=1, vad_filter=True
+                    audio, language=WHISPER_LANGUAGE, beam_size=1, vad_filter=True
                 )
                 text = " ".join(s.text.strip() for s in segments).strip()
-            except Exception:
+            except Exception as exc:
+                if not self._warned_decode:     # say it once instead of failing silently
+                    self._warned_decode = True
+                    self.status.emit(f"error al transcribir: {type(exc).__name__}")
                 continue
             if text:
                 self.line.emit(text, source)
 
         for t in self._cap_threads:
             t.join(timeout=2.0)
-        self.status.emit("stopped")
+        self.status.emit("detenido")

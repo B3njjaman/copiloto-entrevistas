@@ -1,11 +1,11 @@
-"""Generate assets/cluely.ico — a dark rounded square with the panel's cyan dot.
+"""Generate assets/cluely.ico — a dark rounded square with the panel's coral dot.
 Dev-only build helper; Pillow is not a runtime dependency."""
 from pathlib import Path
 from PIL import Image, ImageDraw
 
 SIZE = 256
-BG = (10, 12, 16, 255)         # #0a0c10 — panel background
-ACCENT = (125, 211, 252, 255)  # #7dd3fc — the ● accent
+BG = (17, 20, 27, 255)         # #11141b — panel background
+ACCENT = (240, 138, 93, 255)   # #f08a5d — the ● accent
 
 img = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
 d = ImageDraw.Draw(img)
