@@ -120,6 +120,8 @@ VISION_MONITOR = int(os.environ.get("CLUELY_VISION_MONITOR", "1"))
 
 # --- UI ---
 OPACITY = float(os.environ.get("CLUELY_OPACITY", "0.93"))
+# Use the personal skin in skin/ (scripts/make_skin.py) when it exists.
+SKIN = os.environ.get("CLUELY_SKIN", "1") == "1"
 
 # --- Global hotkeys (pynput format) ---
 HOTKEY_TOGGLE = "<ctrl>+<alt>+h"        # show / hide the overlay

@@ -80,6 +80,20 @@ def main():
     ov.toggle_live()
     assert went_live == [True] and ov.calib.isHidden(), "skipped: listen straight away"
 
+    # The mascot (only with a personal skin in skin/) follows the app's state
+    if ov.mascot is not None:
+        ov._live = True                  # as _go_live would, without a listener
+        ov._set_power(True)
+        assert ov.mascot.state == "listening", ov.mascot.state
+        ov._mascot("answering", "¡Listo!")
+        assert ov.mascot.state == "answering"
+        ov._mascot_rest()
+        assert ov.mascot.state == "listening", "should settle back to listening"
+        ov._live = False
+        ov._set_power(False)
+        assert ov.mascot.state == "idle"
+    print("mascot:", "on" if ov.mascot is not None else "off (no skin/)")
+
     print("OK")
 
 

@@ -22,13 +22,15 @@ from PySide6.QtWidgets import (
 )
 
 import brain
+import skin
 import voice
 from config import (
     APP_NAME, AUTO_FROM, AUTO_MIN_NEWCHARS, AUTO_THROTTLE_S, ECHO_GUARD,
-    ECHO_RATIO, ECHO_WINDOW_S, MIC_DEVICE, MY_NAME, NOTES_DIR, OPACITY, VISION_MONITOR,
-    VOICE_ID,
+    ECHO_RATIO, ECHO_WINDOW_S, MIC_DEVICE, MY_NAME, NOTES_DIR, OPACITY, SKIN,
+    VISION_MONITOR, VOICE_ID,
 )
 from ears import Listener, list_output_devices
+from mascot import MascotWidget
 
 # Win32 constants
 WDA_NONE = 0x00000000
@@ -295,6 +297,11 @@ class Overlay(QWidget):
         self._calib_worker = None        # the recording in progress, if any
         self._calib_threads = []         # workers still running (incl. cancelled)
         self._calib_then_listen = False  # go live once the card closes
+        # Optional personal skin (scripts/make_skin.py): accent colour, panel
+        # background and the mascot strip. Without skin/ nothing changes.
+        self._skin = skin.load_skin() if SKIN else None
+        self._accent = self._skin.accent.name() if self._skin else ACCENT
+        self.mascot = None
         # Streamed chunks are coalesced into one re-render every 60 ms, not one per token.
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -306,12 +313,14 @@ class Overlay(QWidget):
         # shares. Rounded corners come from a window mask instead (resizeEvent).
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setWindowOpacity(OPACITY)
-        self.resize(420, 620)
+        with_mascot = self._skin is not None and MascotWidget.available()
+        self.resize(420, 740 if with_mascot else 620)
 
         self._build_ui()
         self._apply_style()
         self._set_power(False)
         self._position_top_right()
+        self._mascot(say="¡Hola! Pulsa Escuchar cuando empiece la reunión", ms=6000)
 
         self.sig_toggle.connect(self.toggle_visible)
         self.sig_focus_input.connect(self.focus_input)
@@ -331,7 +340,7 @@ class Overlay(QWidget):
         header = QHBoxLayout()
         header.setSpacing(8)
         self.title = QLabel(
-            f'<span style="color:{ACCENT}">●</span>&nbsp; {APP_NAME}'
+            f'<span style="color:{self._accent}">●</span>&nbsp; {APP_NAME}'
             f'<span style="color:#5C6476; font-weight:400">&nbsp; · Claude</span>')
         self.title.setObjectName("title")
         self.status = QLabel("iniciando…")
@@ -396,6 +405,10 @@ class Overlay(QWidget):
         dev.addWidget(self.cmb_speaker, 1)
         dev.addWidget(self.btn_voice)
         root.addLayout(dev)
+
+        if self._skin is not None and MascotWidget.available():
+            self.mascot = MascotWidget(self._skin)
+            root.addWidget(self.mascot)
 
         root.addWidget(self._build_calibration(), 1)
 
@@ -472,7 +485,7 @@ class Overlay(QWidget):
         root.addLayout(footer)
 
     def _apply_style(self):
-        self.setStyleSheet(
+        self.setStyleSheet(skin.themed(
             """
             QWidget { color: #ECEEF2; font-family: 'Segoe UI'; font-size: 13px; }
             #title { font-size: 14px; font-weight: 600; }
@@ -560,12 +573,14 @@ class Overlay(QWidget):
             QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: transparent; }
             QToolTip { background: #151922; color: #ECEEF2;
                        border: 1px solid rgba(255,255,255,0.12); padding: 4px 6px; }
-            """
-        )
+            """, self._skin))
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        if self._skin is not None:
+            skin.paint_panel_background(p, self.rect(), self._skin)
+            return
         grad = QLinearGradient(0, 0, 0, self.height())
         grad.setColorAt(0.0, QColor(22, 25, 34))
         grad.setColorAt(1.0, QColor(11, 13, 18))
@@ -602,6 +617,8 @@ class Overlay(QWidget):
     def _set_status(self, msg):
         """Show a status, elided to fit the header; the full text is the tooltip."""
         full = ("EN VIVO · " if self._live else "") + msg
+        if msg.startswith(("⚠", "error", "¡VISIBLE")):
+            self._mascot("error", msg.lstrip("⚠ "), ms=6000)
         self.status.setToolTip(full)
         self.status.setText(self.status.fontMetrics().elidedText(
             full, Qt.ElideRight, self.status.maximumWidth()))
@@ -712,6 +729,7 @@ class Overlay(QWidget):
         self.calib_skip.setToolTip("Escuchar sin separar voces: todo lo del micrófono cuenta como tú"
                                    if then_listen else "")
         self.tabs.hide()                 # the card takes the tabs' room until it closes
+        self._mascot(say="Lee el texto en voz alta, yo te escucho", ms=5000)
         self.calib.show()
         if not self.isVisible():         # opened by the hotkey with the panel hidden
             self.show()
@@ -751,6 +769,7 @@ class Overlay(QWidget):
         self.calib_level.setValue(0)
         self.calib_msg.setText(
             f"¡Listo! Ya reconozco tu voz (calidad {result['consistency']:.0%}).")
+        self._mascot("answering", "¡Ya conozco tu voz!")
         self.calib_skip.setEnabled(False)
         QTimer.singleShot(1400, self, self._finish_calibration)  # cancelled if the panel goes
 
@@ -758,6 +777,7 @@ class Overlay(QWidget):
         self._calib_worker = None
         self.calib_level.setValue(0)
         self.calib_msg.setText(f"⚠ {msg}")
+        self._mascot("error", "Probemos otra vez")
         self.calib_start.setText("Reintentar")
         self.calib_start.setEnabled(True)
         self.calib_skip.setText("Omitir" if self._calib_then_listen else "Cancelar")
@@ -792,6 +812,24 @@ class Overlay(QWidget):
         self.btn_live.setProperty("on", on)
         self.btn_live.style().unpolish(self.btn_live)
         self.btn_live.style().polish(self.btn_live)
+        self._mascot("listening" if on else "idle")
+
+    # ---------- mascot ----------
+    def _mascot(self, state=None, say=None, ms=2500):
+        """Act out a moment on the mascot, if there is one. Answering and error
+        are moments: the mascot settles back to idle/listening afterwards."""
+        if self.mascot is None:
+            return
+        if state:
+            self.mascot.set_state(state)
+            if state in ("answering", "error"):
+                QTimer.singleShot(max(ms, 1800), self, self._mascot_rest)
+        if say:
+            self.mascot.say(say, ms)
+
+    def _mascot_rest(self):
+        if self.mascot is not None and self.mascot.state in ("answering", "error"):
+            self.mascot.set_state("listening" if self._live else "idle")
 
     def _start_listener(self):
         """Spawn a Listener bound to the currently-selected call-audio device."""
@@ -1018,6 +1056,7 @@ class Overlay(QWidget):
         self._render_chat()
         self.tabs.setCurrentIndex(0)
         self._set_status("leyendo pantalla…" if image_b64 else "pensando…")
+        self._mascot("thinking")
         w = AskWorker(question, transcript, self.notes.toPlainText(), image_b64,
                       fast=(label == "auto"))
         w.chunk.connect(lambda s, i=idx: self._append_at(i, s))
@@ -1034,6 +1073,7 @@ class Overlay(QWidget):
             self._render_timer.start()
 
     def _worker_done(self, kind="auto"):
+        self._mascot("answering", "¡Listo! Esto puedes decir" if kind == "auto" else None)
         # Only the auto-answer worker owns the single-flight gate; a manual ask
         # finishing must not reopen it (and must not fire a queued follow-up).
         if kind == "auto":
@@ -1045,6 +1085,7 @@ class Overlay(QWidget):
         role, _ = self._convo[i]
         self._convo[i] = (role, f"_(error: {msg})_")
         self._render_chat()
+        self._mascot("error", "Uy, algo falló. Mira la tarjeta")
         if kind == "auto":
             self._auto_inflight = False
             self._drain_pending_auto()
