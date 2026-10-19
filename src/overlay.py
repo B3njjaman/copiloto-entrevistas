@@ -5,9 +5,11 @@ transcribes locally, and auto-answers questions aimed at you.
 import base64
 import ctypes
 import html
+import threading
 import time
 from difflib import SequenceMatcher
 
+import numpy as np
 from PySide6.QtCore import QBuffer, QByteArray, QEvent, QRectF, Qt, QTimer, QUrl, Signal, QThread
 from PySide6.QtGui import (
     QColor, QDesktopServices, QImage, QKeySequence, QLinearGradient, QPainter,
@@ -15,15 +17,16 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QPushButton, QScrollArea, QSizeGrip, QTabWidget, QTextBrowser,
-    QTextEdit, QVBoxLayout, QWidget,
+    QLineEdit, QProgressBar, QPushButton, QScrollArea, QSizeGrip, QTabWidget,
+    QTextBrowser, QTextEdit, QVBoxLayout, QWidget,
 )
 
 import brain
 import voice
 from config import (
     APP_NAME, AUTO_FROM, AUTO_MIN_NEWCHARS, AUTO_THROTTLE_S, ECHO_GUARD,
-    ECHO_RATIO, ECHO_WINDOW_S, MY_NAME, NOTES_DIR, OPACITY, VISION_MONITOR, VOICE_ID,
+    ECHO_RATIO, ECHO_WINDOW_S, MIC_DEVICE, MY_NAME, NOTES_DIR, OPACITY, VISION_MONITOR,
+    VOICE_ID,
 )
 from ears import Listener, list_output_devices
 
@@ -152,6 +155,63 @@ def _norm_line(text: str) -> str:
     return " ".join(text.lower().split())
 
 
+CALIBRATION_SECONDS = 15
+CALIBRATION_STAGES = {
+    "prepare": "Preparando el modelo de voz… (la primera vez se descarga, 26 MB)",
+    "record": "Lee el texto en voz alta, con tu tono normal.",
+    "analyze": "Analizando tu voz…",
+}
+CALIBRATION_IDLE = "Pulsa Empezar y lee el texto en voz alta."
+
+
+class CalibrationWorker(QThread):
+    """Records you reading voice.CALIBRATION_TEXT and builds your voiceprint, off
+    the UI thread. The model loads first, so recording starts only once the
+    audio can be analysed right away."""
+    stage = Signal(str)               # a CALIBRATION_STAGES key
+    progress = Signal(float, float)   # (fraction recorded, mic level 0..1)
+    done = Signal(object)             # voice.enroll() result
+    failed = Signal(str)              # message for the user
+
+    def __init__(self):
+        super().__init__()
+        self._cancel = threading.Event()
+
+    def cancel(self):
+        self._cancel.set()
+
+    def run(self):
+        try:
+            self.stage.emit("prepare")
+            voice.warm()
+            if self._cancel.is_set():
+                return
+            import soundcard as sc
+            mic = (sc.get_microphone(str(MIC_DEVICE), include_loopback=False)
+                   if MIC_DEVICE else sc.default_microphone())
+            self.stage.emit("record")
+            block = voice.SAMPLE_RATE // 4
+            total = CALIBRATION_SECONDS * 4
+            blocks = []
+            # 1 s WASAPI buffer, as in ears.py, so a busy UI can't drop audio.
+            with mic.recorder(samplerate=voice.SAMPLE_RATE, channels=1,
+                              blocksize=voice.SAMPLE_RATE) as rec:
+                for i in range(total):
+                    if self._cancel.is_set():
+                        return
+                    b = np.asarray(rec.record(numframes=block), dtype=np.float32).reshape(-1)
+                    blocks.append(b)
+                    level = min(1.0, float(np.sqrt(np.mean(b * b))) * 12) if b.size else 0.0
+                    self.progress.emit((i + 1) / total, level)
+            self.stage.emit("analyze")
+            self.done.emit(voice.enroll(np.concatenate(blocks)))
+        except voice.CalibrationError as exc:
+            self.failed.emit(str(exc))
+        except Exception as exc:
+            self.failed.emit(f"No pude grabar tu voz ({type(exc).__name__}). "
+                             "Revisa que el micrófono esté conectado y permitido.")
+
+
 class AskWorker(QThread):
     """Runs one query off the UI thread, streaming text back via signals."""
     chunk = Signal(str)
@@ -231,6 +291,10 @@ class Overlay(QWidget):
         self._pending_auto = None        # newest follow-up queued while answering
         self._recent_lines = []          # [(monotonic_ts, source, norm_text)] echo guard
         self._voiceprint = voice.load_profile() if VOICE_ID else None
+        self._voice_skipped = False      # "Omitir" pressed: no voice ID this session
+        self._calib_worker = None        # the recording in progress, if any
+        self._calib_threads = []         # workers still running (incl. cancelled)
+        self._calib_then_listen = False  # go live once the card closes
         # Streamed chunks are coalesced into one re-render every 60 ms, not one per token.
         self._render_timer = QTimer(self)
         self._render_timer.setSingleShot(True)
@@ -321,9 +385,19 @@ class Overlay(QWidget):
             "Debe ser la misma que usa Zoom / Meet / Teams como altavoz.")
         self._populate_speakers()
         self.cmb_speaker.currentIndexChanged.connect(self._on_speaker_changed)
+        # Your voiceprint: calibrate it, or redo it if you changed mic or room.
+        self.btn_voice = QPushButton()
+        self.btn_voice.setObjectName("chip")
+        self.btn_voice.setToolTip("Calibra tu voz para distinguir cuándo hablas tú y cuándo ellos")
+        self.btn_voice.clicked.connect(self._recalibrate)
+        self.btn_voice.setVisible(VOICE_ID)
+        self._update_voice_chip()
         dev.addWidget(lbl)
         dev.addWidget(self.cmb_speaker, 1)
+        dev.addWidget(self.btn_voice)
         root.addLayout(dev)
+
+        root.addWidget(self._build_calibration(), 1)
 
         self.tabs = QTabWidget()
         self.tabs.setDocumentMode(True)
@@ -441,6 +515,20 @@ class Overlay(QWidget):
             QPushButton#chip { background: transparent; color: #8B93A5;
                                border: 1px solid rgba(255,255,255,0.10);
                                border-radius: 12px; padding: 4px 10px; font-size: 11px; }
+            QFrame#calib { background: rgba(255,255,255,0.035);
+                           border: 1px solid rgba(240,138,93,0.35); border-radius: 12px; }
+            QLabel#calibTitle { font-size: 16px; font-weight: 700; }
+            QLabel#calibText { font-size: 14px; color: #FFFFFF;
+                               background: rgba(240,138,93,0.10);
+                               border-radius: 8px; padding: 10px 12px; }
+            QLabel#calibMsg { color: #DDE1E8; font-size: 12px; }
+            QProgressBar { background: rgba(255,255,255,0.07); border: 0;
+                           border-radius: 3px; min-height: 6px; max-height: 6px; }
+            QProgressBar::chunk { background: #F08A5D; border-radius: 3px; }
+            QProgressBar#level::chunk { background: #34D399; }
+            QPushButton#primary { background: #F08A5D; color: #1A0F0A; }
+            QPushButton#primary:hover { background: #F49C75; }
+            QPushButton#primary:disabled { background: rgba(255,255,255,0.06); color: #5C6476; }
             QPushButton#chip:checked { background: rgba(240,138,93,0.16); color: #FFC9AE;
                                        border: 1px solid rgba(240,138,93,0.45); }
             QPushButton#power { padding: 6px 14px; }
@@ -539,9 +627,161 @@ class Overlay(QWidget):
             self._retire_listener()
             self._set_power(False)
             self._set_status("detenido")
+        elif not self.calib.isHidden():  # isVisible() is False while the panel is hidden
+            return                       # finish or skip the calibration first
+        elif VOICE_ID and self._voiceprint is None and not self._voice_skipped:
+            self._show_calibration(then_listen=True)
         else:
-            self._live = True
-            self._set_power(True)
+            self._go_live()
+
+    def _go_live(self):
+        self._live = True
+        self._set_power(True)
+        self._start_listener()
+
+    # ---------- voice calibration ----------
+    def _build_calibration(self):
+        """The card shown before the first listen (or from the voice chip): you
+        read a short text so the listener can tell your voice from the others'."""
+        self.calib = QFrame()
+        self.calib.setObjectName("calib")
+        lay = QVBoxLayout(self.calib)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(8)
+        title = QLabel("Calibra tu voz")
+        title.setObjectName("calibTitle")
+        sub = QLabel("Así distingo cuándo hablas tú y cuándo ellos, también en "
+                     "reuniones presenciales. Tu huella de voz se guarda solo en este PC.")
+        sub.setObjectName("muted")
+        sub.setWordWrap(True)
+        text = QLabel(voice.CALIBRATION_TEXT)
+        text.setObjectName("calibText")
+        text.setWordWrap(True)
+        self.calib_progress = QProgressBar()
+        self.calib_progress.setRange(0, 1000)
+        self.calib_progress.setTextVisible(False)
+        self.calib_level = QProgressBar()
+        self.calib_level.setObjectName("level")
+        self.calib_level.setRange(0, 100)
+        self.calib_level.setTextVisible(False)
+        self.calib_msg = QLabel(CALIBRATION_IDLE)
+        self.calib_msg.setObjectName("calibMsg")
+        self.calib_msg.setWordWrap(True)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.calib_start = QPushButton("Empezar")
+        self.calib_start.setObjectName("primary")
+        self.calib_start.clicked.connect(self._start_calibration)
+        self.calib_skip = QPushButton("Omitir")
+        self.calib_skip.clicked.connect(self._skip_calibration)
+        buttons.addWidget(self.calib_start)
+        buttons.addWidget(self.calib_skip)
+        buttons.addStretch()
+        lay.addWidget(title)
+        lay.addWidget(sub)
+        lay.addSpacing(4)
+        lay.addWidget(text)
+        lay.addSpacing(4)
+        lay.addWidget(QLabel("Tiempo", objectName="muted"))
+        lay.addWidget(self.calib_progress)
+        lay.addWidget(QLabel("Volumen de tu micrófono", objectName="muted"))
+        lay.addWidget(self.calib_level)
+        lay.addWidget(self.calib_msg)
+        lay.addSpacing(4)
+        lay.addLayout(buttons)
+        lay.addStretch(1)
+        self.calib.hide()
+        return self.calib
+
+    def _recalibrate(self):
+        self._show_calibration(then_listen=False)
+
+    def _update_voice_chip(self):
+        self.btn_voice.setText("Mi voz ✓" if self._voiceprint is not None else "Calibrar voz")
+
+    def _show_calibration(self, then_listen):
+        if self._calib_worker is not None:
+            return                       # already recording
+        self._calib_then_listen = then_listen
+        self.calib_progress.setValue(0)
+        self.calib_level.setValue(0)
+        self.calib_msg.setText(CALIBRATION_IDLE)
+        self.calib_start.setText("Empezar")
+        self.calib_start.setEnabled(True)
+        self.calib_skip.setText("Omitir" if then_listen else "Cancelar")
+        self.calib_skip.setToolTip("Escuchar sin separar voces: todo lo del micrófono cuenta como tú"
+                                   if then_listen else "")
+        self.tabs.hide()                 # the card takes the tabs' room until it closes
+        self.calib.show()
+        if not self.isVisible():         # opened by the hotkey with the panel hidden
+            self.show()
+        self.raise_()
+
+    def _start_calibration(self):
+        self.calib_start.setEnabled(False)
+        self.calib_skip.setText("Cancelar")
+        w = CalibrationWorker()
+
+        def current(slot):
+            # Only the current worker reaches the card, so a cancelled recording
+            # that finishes late can't overwrite it or the voiceprint.
+            return lambda *args: slot(*args) if w is self._calib_worker else None
+
+        w.stage.connect(current(lambda k: self.calib_msg.setText(CALIBRATION_STAGES[k])))
+        w.progress.connect(current(self._on_calibration_progress))
+        w.done.connect(current(self._on_calibrated))
+        w.failed.connect(current(self._on_calibration_failed))
+        w.finished.connect(lambda: self._calib_threads.remove(w))
+        self._calib_worker = w
+        self._calib_threads.append(w)    # a running QThread must not be collected
+        w.start()
+
+    def _on_calibration_progress(self, fraction, level):
+        self.calib_progress.setValue(int(fraction * 1000))
+        self.calib_level.setValue(int(level * 100))
+
+    def _on_calibrated(self, result):
+        self._calib_worker = None
+        try:
+            voice.save_profile(result)
+        except OSError:
+            pass                         # still used for this session
+        self._voiceprint = result["embedding"]
+        self._update_voice_chip()
+        self.calib_level.setValue(0)
+        self.calib_msg.setText(
+            f"¡Listo! Ya reconozco tu voz (calidad {result['consistency']:.0%}).")
+        self.calib_skip.setEnabled(False)
+        QTimer.singleShot(1400, self, self._finish_calibration)  # cancelled if the panel goes
+
+    def _on_calibration_failed(self, msg):
+        self._calib_worker = None
+        self.calib_level.setValue(0)
+        self.calib_msg.setText(f"⚠ {msg}")
+        self.calib_start.setText("Reintentar")
+        self.calib_start.setEnabled(True)
+        self.calib_skip.setText("Omitir" if self._calib_then_listen else "Cancelar")
+
+    def _skip_calibration(self):
+        if self._calib_worker is not None:
+            # Cancelar while recording: drop it and just close the card.
+            self._calib_worker.cancel()
+            self._calib_worker = None
+            self._calib_then_listen = False
+        elif self._calib_then_listen:
+            self._voice_skipped = True   # Omitir: no voice ID until the app restarts
+        self._finish_calibration()
+
+    def _finish_calibration(self):
+        self.calib_skip.setEnabled(True)
+        self.calib.hide()
+        self.tabs.show()
+        if self._calib_then_listen:
+            self._calib_then_listen = False
+            self._go_live()
+        elif self._live and self._listener is not None:
+            # Recalibrated mid-meeting: restart the listener with the new voiceprint.
+            self._retire_listener()
             self._start_listener()
 
     def _set_power(self, on):
@@ -869,6 +1109,9 @@ class Overlay(QWidget):
         """Stop and join the active and any retiring listeners. Blocking is fine
         here — the app is exiting — and a bounded wait() guarantees no QThread is
         destroyed while still running (which would abort the process)."""
+        for w in list(self._calib_threads):
+            w.cancel()
+            w.wait(5000)
         pending = list(self._retiring)
         if self._listener:
             pending.append(self._listener)

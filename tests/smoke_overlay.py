@@ -44,6 +44,42 @@ def main():
     ov._on_transcript("los datos de sus clientes son de ustedes.", "You")
     assert len(ov._transcript_buf) == n + 1, ov._transcript_buf[n:]
 
+    # Voice calibration. Nothing here records or touches the real profile/.
+    import numpy as np
+    import voice
+    voice.save_profile = lambda result: None
+    went_live = []
+    ov._go_live = lambda: went_live.append(True)   # instead of the real listener
+    ov._voiceprint, ov._voice_skipped = None, False
+    ov._update_voice_chip()
+    assert ov.btn_voice.text() == "Calibrar voz", ov.btn_voice.text()
+    # The first Escuchar without a voiceprint opens the card instead of listening
+    ov.toggle_live()
+    assert not ov.calib.isHidden() and ov.tabs.isHidden(), "card should replace the tabs"
+    assert not went_live and ov._listener is None, "must not listen before calibrating"
+    ov.toggle_live()                                # ignored while the card is open
+    assert not went_live
+    # A failed recording offers a retry
+    ov._on_calibration_failed("Te escuché solo 2 s.")
+    assert ov.calib_start.text() == "Reintentar" and ov.calib_start.isEnabled()
+    # A good one updates the chip, then the card closes and listening starts
+    ov._on_calibrated({"embedding": np.ones(256, dtype=np.float32),
+                       "consistency": 0.9, "seconds": 12.0})
+    assert ov.btn_voice.text() == "Mi voz ✓" and "90%" in ov.calib_msg.text()
+    ov._finish_calibration()
+    assert ov.calib.isHidden() and not ov.tabs.isHidden(), "tabs should come back"
+    assert went_live == [True], "should go live after calibrating"
+    # Omitir listens without voice ID and doesn't ask again this session
+    went_live.clear()
+    ov._voiceprint = None
+    ov._show_calibration(then_listen=True)
+    assert ov.calib_skip.text() == "Omitir"
+    ov._skip_calibration()
+    assert ov._voice_skipped and went_live == [True] and ov.calib.isHidden()
+    went_live.clear()
+    ov.toggle_live()
+    assert went_live == [True] and ov.calib.isHidden(), "skipped: listen straight away"
+
     print("OK")
 
 
