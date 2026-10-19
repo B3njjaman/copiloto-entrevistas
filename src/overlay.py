@@ -393,6 +393,12 @@ class Overlay(QWidget):
             "La salida de audio que escucho para oír a los demás.\n"
             "Debe ser la misma que usa Zoom / Meet / Teams como altavoz.")
         self._populate_speakers()
+        # Long device names ("Altavoces (Realtek High Definition Audio)…") used to
+        # stretch the whole panel; the box now elides them and the open list
+        # shows them in full.
+        self.cmb_speaker.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cmb_speaker.setMinimumContentsLength(12)
+        self.cmb_speaker.view().setMinimumWidth(self.cmb_speaker.view().sizeHintForColumn(0) + 24)
         self.cmb_speaker.currentIndexChanged.connect(self._on_speaker_changed)
         # Your voiceprint: calibrate it, or redo it if you changed mic or room.
         self.btn_voice = QPushButton()
