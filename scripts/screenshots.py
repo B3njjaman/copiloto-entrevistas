@@ -53,10 +53,23 @@ PARTICIPANTS = [
 
 
 def make_overlay(app, state):
-    from overlay import Overlay
+    import numpy as np
+    from overlay import CALIBRATION_STAGES, Overlay
 
     ov = Overlay()
     ov.resize(420, 640)
+    if state == "calibrate":       # halfway through reading the calibration text
+        ov._voiceprint = None
+        ov._update_voice_chip()
+        ov._show_calibration(then_listen=True)
+        ov.calib_start.setEnabled(False)
+        ov.calib_skip.setText("Cancelar")
+        ov.calib_msg.setText(CALIBRATION_STAGES["record"])
+        ov.calib_progress.setValue(550)
+        ov.calib_level.setValue(62)
+    else:                          # a demo voiceprint, never the real profile/
+        ov._voiceprint = np.ones(256, dtype=np.float32)
+        ov._update_voice_chip()
     if state in ("answers", "transcript"):
         ov._live = True
         ov._set_power(True)
@@ -243,6 +256,7 @@ def main():
     answers = make_overlay(app, "answers")
     transcript = make_overlay(app, "transcript")
     idle = make_overlay(app, "idle")
+    calibrate = make_overlay(app, "calibrate")
 
     hero = scene(answers, with_panel=True)
     hero.save(str(OUT / "hero.png"))
@@ -251,7 +265,7 @@ def main():
         .save(str(OUT / "invisible.png"))
     panels_row([idle, answers, transcript]).save(str(OUT / "panels.png"))
     for name, px in (("panel-answers", answers), ("panel-transcript", transcript),
-                     ("panel-idle", idle)):
+                     ("panel-idle", idle), ("panel-calibrate", calibrate)):
         px.save(str(OUT / f"{name}.png"))
     print(f"wrote {sorted(f.name for f in OUT.glob('*.png'))}")
 
