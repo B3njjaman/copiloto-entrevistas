@@ -72,6 +72,15 @@ WHISPER_DEVICE = os.environ.get("CLUELY_WHISPER_DEVICE", "cuda")
 WHISPER_COMPUTE = os.environ.get("CLUELY_WHISPER_COMPUTE", "int8")
 # Where models are downloaded ("" = the Hugging Face cache in your user folder).
 WHISPER_DIR = os.environ.get("CLUELY_WHISPER_DIR", "").strip() or None
+# The voiceprint model goes next to the whisper models, or in models/ by default.
+MODELS_DIR = Path(WHISPER_DIR) if WHISPER_DIR else BASE_DIR / "models"
+
+# --- Voice calibration (tell "You" from "Them" on the microphone) ---
+VOICE_ID = os.environ.get("CLUELY_VOICE_ID", "1") == "1"
+# Cosine similarity to your voiceprint at or above which a mic phrase is "You".
+VOICE_THRESHOLD = float(os.environ.get("CLUELY_VOICE_THRESHOLD", "0.5"))
+# Your voiceprint lives here (gitignored: it is biometric data).
+PROFILE_DIR = BASE_DIR / "profile"
 # Spoken language of the call: "es", "en", … or "auto" to detect it per chunk
 # (slower and less reliable on 2s chunks, so pin it when you know it).
 _lang = os.environ.get("CLUELY_WHISPER_LANGUAGE", "es").strip().lower()
