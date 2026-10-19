@@ -22,3 +22,6 @@ docs/superpowers/
 # Local config (may hold device names and paths) and downloaded whisper models.
 copiloto.env
 models/
+
+# Your voiceprint is biometric data: it stays on this machine.
+profile/

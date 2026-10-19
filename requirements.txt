@@ -6,3 +6,4 @@ numpy
 faster-whisper
 nvidia-cublas-cu12
 nvidia-cudnn-cu12
+sherpa-onnx
