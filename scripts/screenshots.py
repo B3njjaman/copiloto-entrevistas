@@ -14,6 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 os.environ.setdefault("QT_SCALE_FACTOR", "2")   # crisp 2x renders
+# Published screenshots never show your personal skin (skin/ is private art).
+os.environ["CLUELY_SKIN"] = "0"
 
 from PySide6.QtCore import QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import (  # noqa: E402
@@ -71,10 +73,12 @@ def make_overlay(app, state):
         ov._voiceprint = np.ones(256, dtype=np.float32)
         ov._update_voice_chip()
     if state in ("answers", "transcript"):
-        ov._live = True
-        ov._set_power(True)
+        # Demo lines go in before going live: live, a demo question would fire a
+        # real auto-answer and start a Claude session.
         for src, text in DEMO_TRANSCRIPT:
             ov._on_transcript(text, src)
+        ov._live = True
+        ov._set_power(True)
         ov._convo = list(DEMO_CONVO)
         ov._render_chat()
         ov.notes.setPlainText("Cliente: cadena de 12 tiendas. Plan Pro mensual.")
