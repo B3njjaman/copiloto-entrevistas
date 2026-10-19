@@ -25,3 +25,10 @@ models/
 
 # Your voiceprint is biometric data: it stays on this machine.
 profile/
+
+# Your mascot skin is cut from your own wallpaper (usually someone else's art):
+# it stays on this machine, like the rest of skin/.
+skin/
+
+# Claude Code agent worktrees and local settings.
+.claude/
